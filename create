@@ -1,0 +1,245 @@
+# app.py
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+from sklearn.impute import KNNImputer
+from sklearn.linear_model import LinearRegression
+import plotly.express as px
+import pickle
+import json
+
+st.set_page_config(
+    page_title="Intelligent Data Suite",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.title("🧠 Intelligent Data Analysis Suite")
+st.markdown("---")
+
+# =====================
+# Sidebar Navigation
+# =====================
+step = st.sidebar.radio("Navigation", [
+    "1. Upload & Assessment",
+    "2. Cleaning & Imputation",
+    "3. Filtering & Selection",
+    "4. Visualization",
+    "5. AI Queries",
+    "6. Prediction",
+    "7. Save/Load Session",
+    "8. Audit Trail"
+])
+
+# Initialize session state for dataset
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'df_filtered' not in st.session_state:
+    st.session_state.df_filtered = None
+if 'logs' not in st.session_state:
+    st.session_state.logs = []
+
+# =====================
+# Functions
+# =====================
+def calculate_quality(df):
+    missing_score = 1 - df.isnull().mean().mean()
+    duplicate_score = 1 - df.duplicated().mean()
+    numeric_cols = df.select_dtypes(include=np.number)
+    if len(numeric_cols) > 0:
+        z = np.abs((numeric_cols - numeric_cols.mean()) / numeric_cols.std())
+        outlier_score = 1 - (z > 3).sum().sum() / np.prod(numeric_cols.shape)
+    else:
+        outlier_score = 1.0
+    total_score = 100 * (missing_score + duplicate_score + outlier_score) / 3
+    return round(total_score,2)
+
+def log_action(action, details=""):
+    entry = {"action": action, "details": details}
+    st.session_state.logs.append(entry)
+    with open("audit_log.json","a") as f:
+        f.write(json.dumps(entry)+"\n")
+
+# =====================
+# 1️⃣ Upload & Assessment
+# =====================
+if step == "1. Upload & Assessment":
+    st.header("Upload Dataset & Assess Quality")
+    uploaded_file = st.file_uploader("Upload CSV/Excel", type=['csv','xlsx'])
+    if uploaded_file:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+        st.session_state.df = df.copy()
+        st.session_state.df_filtered = df.copy()
+        st.subheader("Dataset Preview")
+        st.dataframe(df.head())
+        
+        quality_score = calculate_quality(df)
+        st.metric("Data Quality Score", f"{quality_score}%")
+        log_action("upload_dataset", uploaded_file.name)
+
+# =====================
+# 2️⃣ Cleaning & Imputation
+# =====================
+elif step == "2. Cleaning & Imputation":
+    st.header("Data Cleaning & Imputation")
+    if st.session_state.df is not None:
+        df = st.session_state.df.copy()
+        st.subheader("Current Data Quality")
+        st.dataframe(df.head())
+
+        st.write("Data Quality Score:", calculate_quality(df), "%")
+
+        if st.checkbox("Do you want to impute missing data?"):
+            method = st.selectbox("Choose Imputation Method", ["Mean", "Median", "KNN"])
+            if st.button("Apply Imputation"):
+                if method == "Mean":
+                    df.fillna(df.mean(), inplace=True)
+                elif method == "Median":
+                    df.fillna(df.median(), inplace=True)
+                else:
+                    imputer = KNNImputer(n_neighbors=5)
+                    df[:] = imputer.fit_transform(df)
+                st.session_state.df = df.copy()
+                st.session_state.df_filtered = df.copy()
+                st.success("Imputation Applied")
+                st.metric("Updated Data Quality Score", f"{calculate_quality(df)}%")
+                log_action("imputation", method)
+    else:
+        st.warning("Upload a dataset first!")
+
+# =====================
+# 3️⃣ Filtering & Selection
+# =====================
+elif step == "3. Filtering & Selection":
+    st.header("Filter Data for Analysis")
+    if st.session_state.df is not None:
+        df = st.session_state.df.copy()
+        if 'year' in df.columns:
+            selected_years = st.multiselect("Select Year(s)", sorted(df['year'].unique()))
+            if selected_years:
+                df_filtered = df[df['year'].isin(selected_years)]
+            else:
+                df_filtered = df.copy()
+        else:
+            df_filtered = df.copy()
+        st.session_state.df_filtered = df_filtered
+        st.subheader("Filtered Dataset Preview")
+        st.dataframe(df_filtered.head())
+        log_action("filter_data", f"Selected years: {selected_years if 'selected_years' in locals() else 'All'}")
+    else:
+        st.warning("Upload a dataset first!")
+
+# =====================
+# 4️⃣ Visualization
+# =====================
+elif step == "4. Visualization":
+    st.header("Interactive Visualization")
+    if st.session_state.df_filtered is not None:
+        df_filtered = st.session_state.df_filtered
+        numeric_cols = df_filtered.select_dtypes(include=np.number).columns.tolist()
+        if numeric_cols:
+            col1, col2 = st.columns([3,1])
+            with col2:
+                chart_type = st.selectbox("Chart Type", ["Bar", "Line", "Scatter"])
+                x_axis = st.selectbox("X-axis", df_filtered.columns)
+                y_axis = st.selectbox("Y-axis", numeric_cols)
+            with col1:
+                if chart_type == "Bar":
+                    fig = px.bar(df_filtered, x=x_axis, y=y_axis)
+                elif chart_type == "Line":
+                    fig = px.line(df_filtered, x=x_axis, y=y_axis)
+                else:
+                    fig = px.scatter(df_filtered, x=x_axis, y=y_axis)
+                st.plotly_chart(fig, use_container_width=True)
+            log_action("visualization", f"{chart_type} chart: {x_axis} vs {y_axis}")
+        else:
+            st.write("No numeric columns to visualize")
+    else:
+        st.warning("Filter or upload dataset first!")
+
+# =====================
+# 5️⃣ AI Queries
+# =====================
+elif step == "5. AI Queries":
+    st.header("Natural Language Data Queries")
+    if st.session_state.df_filtered is not None:
+        df_filtered = st.session_state.df_filtered
+        query = st.text_input("Ask a question (e.g., mean of column)")
+        if query:
+            q = query.lower()
+            if "mean" in q:
+                st.write(df_filtered.mean())
+            elif "sum" in q:
+                st.write(df_filtered.sum())
+            elif "describe" in q:
+                st.write(df_filtered.describe())
+            else:
+                st.write("Query not recognized. Try: mean, sum, describe")
+            log_action("AI_query", query)
+    else:
+        st.warning("Filter or upload dataset first!")
+
+# =====================
+# 6️⃣ Prediction
+# =====================
+elif step == "6. Prediction":
+    st.header("Run Prediction (Linear Regression)")
+    if st.session_state.df_filtered is not None:
+        df_filtered = st.session_state.df_filtered
+        numeric_cols = df_filtered.select_dtypes(include=np.number).columns.tolist()
+        if len(numeric_cols) >= 2:
+            feature = st.selectbox("Select Feature Column", numeric_cols)
+            target = st.selectbox("Select Target Column", [col for col in numeric_cols if col != feature])
+            if st.button("Run Prediction"):
+                X = df_filtered[[feature]]
+                y = df_filtered[target]
+                model = LinearRegression()
+                model.fit(X, y)
+                df_filtered['Prediction'] = model.predict(X)
+                st.line_chart(df_filtered[[target,'Prediction']])
+                st.session_state.df_filtered = df_filtered
+                st.success("Prediction Completed")
+                log_action("prediction", f"Feature: {feature}, Target: {target}")
+        else:
+            st.write("Need at least 2 numeric columns for prediction")
+    else:
+        st.warning("Filter or upload dataset first!")
+
+# =====================
+# 7️⃣ Save/Load Session
+# =====================
+elif step == "7. Save/Load Session":
+    st.header("Save or Load Analysis Session")
+    if st.session_state.df_filtered is not None:
+        if st.button("Save Session"):
+            with open("saved_session.pkl", "wb") as f:
+                pickle.dump(st.session_state.df_filtered, f)
+            st.success("Session Saved")
+            log_action("save_session")
+        if st.button("Load Session"):
+            try:
+                with open("saved_session.pkl","rb") as f:
+                    df_loaded = pickle.load(f)
+                st.session_state.df_filtered = df_loaded
+                st.dataframe(df_loaded.head())
+                st.success("Session Loaded")
+                log_action("load_session")
+            except:
+                st.error("No saved session found")
+    else:
+        st.warning("Filter or upload dataset first!")
+
+# =====================
+# 8️⃣ Audit Trail
+# =====================
+elif step == "8. Audit Trail":
+    st.header("Audit Trail")
+    if st.session_state.logs:
+        for entry in st.session_state.logs[::-1]:
+            st.write(entry)
+    else:
+        st.write("No actions logged yet.")
